@@ -19,7 +19,13 @@ Before running the project, ensure you have the following installed:
     * *Windows:* `winget install Gyan.FFmpeg`
     * *Mac:* `brew install ffmpeg`
     * *Linux:* `sudo apt install ffmpeg`
-
+```
+    sudo dpkg --configure -a
+    sudo apt -f install
+    sudo apt update
+    sudo apt install -y ffmpeg
+    which ffmpeg && ffprobe -version
+```
 ## 📦 Installation
 
 1.  **Clone the repository** (or download the source code):
