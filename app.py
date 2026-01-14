@@ -74,7 +74,7 @@ def main():
     st.set_page_config(page_title="Audio to Text Transcriber", layout="centered")
     
     st.title("🎙️ Audio to Text Transcriber")
-    st.write("Upload a `.wav` or `.mp3` file to generate a text transcript.")
+    st.write("Upload one or more `.wav` or `.mp3` files to generate text transcripts.")
     
     if "transcripts" not in st.session_state:
         st.session_state.transcripts = {}
