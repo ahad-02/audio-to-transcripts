@@ -47,20 +47,56 @@ def convert_mp3_to_wav(uploaded_file, target_wav_path):
 
 def transcribe_audio(audio_file):
     """
-    Transcribes a .wav file to text using Google Web Speech API.
+    Transcribes a .wav file to text using Google Web Speech API with chunked processing for longer files.
     """
     recognizer = sr.Recognizer()
+    recognizer.energy_threshold = 4000
     
-    with sr.AudioFile(audio_file) as source:
-        audio_data = recognizer.record(source)
+    try:
+        with sr.AudioFile(audio_file) as source:
+            audio = source.stream
+            frame_rate = source.SAMPLE_RATE
+            
+            # Process audio in 60-second chunks (60 * frame_rate frames)
+            chunk_duration = 60 * frame_rate
+            transcripts = []
+            chunk_count = 0
+            
+            while True:
+                audio_chunk = audio.read(chunk_duration)
+                if len(audio_chunk) == 0:
+                    break
+                
+                # Create audio data from chunk
+                audio_data = sr.AudioData(audio_chunk, frame_rate, 2)
+                chunk_count += 1
+                
+                try:
+                    # Try transcription with explicit language
+                    text = recognizer.recognize_google(audio_data, language='en-US')
+                    if text:
+                        transcripts.append(text)
+                except sr.UnknownValueError:
+                    # Try without language specification
+                    try:
+                        text = recognizer.recognize_google(audio_data)
+                        if text:
+                            transcripts.append(text)
+                    except sr.UnknownValueError:
+                        transcripts.append("[Inaudible section]")
+                except sr.RequestError as e:
+                    return f"Error: Could not reach Google API - {e}. Check your internet connection."
+                except Exception as e:
+                    transcripts.append(f"[Error processing chunk: {str(e)}]")
         
-        try:
-            text = recognizer.recognize_google(audio_data)
-            return text
-        except sr.UnknownValueError:
-            return "Error: Could not understand audio."
-        except sr.RequestError as e:
-            return f"Error: Could not request results; {e}"
+        if transcripts:
+            final_text = " ".join(transcripts)
+            return final_text if final_text.strip() else "Error: Could not understand any audio."
+        else:
+            return "Error: Could not understand audio. Try a file with clearer speech."
+            
+    except Exception as e:
+        return f"Error: Failed to process audio - {str(e)}"
 
 def save_to_txt(text, filename="transcript.txt"):
     """
@@ -74,7 +110,7 @@ def main():
     st.set_page_config(page_title="Audio to Text Transcriber", layout="centered")
     
     st.title("🎙️ Audio to Text Transcriber")
-    st.write("Upload one or more `.wav` or `.mp3` files to generate text transcripts.")
+    st.write("Upload a `.wav` or `.mp3` file to generate a text transcript.")
     
     if "transcripts" not in st.session_state:
         st.session_state.transcripts = {}
