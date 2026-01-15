@@ -1,22 +1,45 @@
 import streamlit as st
 import speech_recognition as sr
-from fpdf import FPDF
 from pydub import AudioSegment
+from pydub.utils import which
 import os
+import uuid
 
 #  Configuration
 TEMP_AUDIO_FILE = "temp_audio.wav"
+TEMP_DIR = "temp_audio"
 
 #  Helper Functions
 
-def convert_mp3_to_wav(uploaded_file):
+def ensure_ffmpeg_available():
+    """
+    Ensure FFmpeg and ffprobe are available for pydub and configure their paths.
+    """
+    ffmpeg_path = which("ffmpeg")
+    ffprobe_path = which("ffprobe")
+    if not ffmpeg_path or not ffprobe_path:
+        st.error(
+            "FFmpeg is required to process MP3 files but was not found.\n\n"
+            "Install it and try again:\n\n"
+            "  sudo apt update && sudo apt install -y ffmpeg"
+        )
+        return False
+    # Configure pydub to use discovered binaries
+    AudioSegment.converter = ffmpeg_path
+    AudioSegment.ffprobe = ffprobe_path
+    return True
+
+def convert_mp3_to_wav(uploaded_file, target_wav_path):
     """
     Converts an uploaded MP3 file to WAV format using pydub.
     """
     try:
+        if not ensure_ffmpeg_available():
+            return False
+        uploaded_file.seek(0)
         audio = AudioSegment.from_mp3(uploaded_file)
         # Export as wav
-        audio.export(TEMP_AUDIO_FILE, format="wav")
+        audio.export(target_wav_path, format="wav")
         return True
     except Exception as e:
         st.error(f"Error converting MP3: {e}")
@@ -24,96 +47,167 @@ def convert_mp3_to_wav(uploaded_file):
 
 def transcribe_audio(audio_file):
     """
-    Transcribes a .wav file to text using Google Web Speech API.
+    Transcribes a .wav file to text using Google Web Speech API with chunked processing for longer files.
     """
     recognizer = sr.Recognizer()
+    recognizer.energy_threshold = 4000
     
-    with sr.AudioFile(audio_file) as source:
-        audio_data = recognizer.record(source)
+    try:
+        with sr.AudioFile(audio_file) as source:
+            audio = source.stream
+            frame_rate = source.SAMPLE_RATE
+            
+            # Process audio in 60-second chunks (60 * frame_rate frames)
+            chunk_duration = 60 * frame_rate
+            transcripts = []
+            chunk_count = 0
+            
+            while True:
+                audio_chunk = audio.read(chunk_duration)
+                if len(audio_chunk) == 0:
+                    break
+                
+                # Create audio data from chunk
+                audio_data = sr.AudioData(audio_chunk, frame_rate, 2)
+                chunk_count += 1
+                
+                try:
+                    # Try transcription with explicit language
+                    text = recognizer.recognize_google(audio_data, language='en-US')
+                    if text:
+                        transcripts.append(text)
+                except sr.UnknownValueError:
+                    # Try without language specification
+                    try:
+                        text = recognizer.recognize_google(audio_data)
+                        if text:
+                            transcripts.append(text)
+                    except sr.UnknownValueError:
+                        transcripts.append("[Inaudible section]")
+                except sr.RequestError as e:
+                    return f"Error: Could not reach Google API - {e}. Check your internet connection."
+                except Exception as e:
+                    transcripts.append(f"[Error processing chunk: {str(e)}]")
         
-        try:
-            text = recognizer.recognize_google(audio_data)
-            return text
-        except sr.UnknownValueError:
-            return "Error: Could not understand audio."
-        except sr.RequestError as e:
-            return f"Error: Could not request results; {e}"
+        if transcripts:
+            final_text = " ".join(transcripts)
+            return final_text if final_text.strip() else "Error: Could not understand any audio."
+        else:
+            return "Error: Could not understand audio. Try a file with clearer speech."
+            
+    except Exception as e:
+        return f"Error: Failed to process audio - {str(e)}"
 
-def save_to_pdf(text, filename="transcript.pdf"):
+def save_to_txt(text, filename="transcript.txt"):
     """
-    Saves the given text string into a PDF file.
+    Returns the transcript as plain text for download.
     """
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", size=12)
-    
-    # Add a title
-    pdf.set_font("Arial", 'B', 16)
-    pdf.cell(200, 10, txt="Call Transcript", ln=True, align='C')
-    pdf.ln(10)
-    
-    # Add the body text
-    pdf.set_font("Arial", size=12)
-    # encode to latin-1 to avoid unicode errors in basic fpdf
-    # replace typically problematic characters
-    clean_text = text.encode('latin-1', 'replace').decode('latin-1')
-    pdf.multi_cell(0, 10, txt=clean_text)
-    
-    pdf_output = pdf.output(dest='S').encode('latin-1')
-    return pdf_output
+    return text
 
 # Main Application
 
 def main():
-    st.set_page_config(page_title="Audio to PDF Transcriber", layout="centered")
+    st.set_page_config(page_title="Audio to Text Transcriber", layout="centered")
     
-    st.title("🎙️ Audio to PDF Transcriber")
-    st.write("Upload a `.wav` or `.mp3` file to generate a PDF transcript.")
+    st.title("🎙️ Audio to Text Transcriber")
+    st.write("Upload a `.wav` or `.mp3` file to generate a text transcript.")
+    
+    if "transcripts" not in st.session_state:
+        st.session_state.transcripts = {}
+    if "processed" not in st.session_state:
+        st.session_state.processed = False
+    if "temp_paths" not in st.session_state:
+        st.session_state.temp_paths = {}
 
-    # File Uploader supports both wav and mp3
-    uploaded_file = st.file_uploader("Choose an audio file", type=["wav", "mp3"])
+    # File Uploader supports both wav and mp3; allow multiple files
+    uploaded_files = st.file_uploader(
+        "Choose one or more audio files",
+        type=["wav", "mp3"],
+        accept_multiple_files=True
+    )
 
-    if uploaded_file is not None:
-        # Display audio player
-        st.audio(uploaded_file)
-        
-        if st.button("Transcribe & Generate PDF"):
+    if uploaded_files:
+        # Display audio players
+        for index, uploaded_file in enumerate(uploaded_files):
+            st.audio(uploaded_file)
+
+        def remove_transcript(key_to_remove: str):
+            if key_to_remove in st.session_state.transcripts:
+                del st.session_state.transcripts[key_to_remove]
+            if key_to_remove in st.session_state.temp_paths:
+                path = st.session_state.temp_paths.pop(key_to_remove)
+                if path and os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        pass
+
+        if st.button("Process", key="process_button"):
+            os.makedirs(TEMP_DIR, exist_ok=True)
+            st.session_state.transcripts = {}
+            st.session_state.temp_paths = {}
             with st.spinner("Processing audio..."):
-                
-                success = False
+                for index, uploaded_file in enumerate(uploaded_files):
+                    success = False
+                    unique_id = uuid.uuid4().hex[:8]
+                    base_name = os.path.splitext(uploaded_file.name)[0] or "audio"
+                    temp_wav_path = os.path.join(TEMP_DIR, f"{base_name}_{unique_id}.wav")
 
-                # Handle MP3 vs WAV
-                if uploaded_file.name.endswith('.mp3'):
-                    # Convert MP3 to WAV first
-                    success = convert_mp3_to_wav(uploaded_file)
-                else:
-                    # Save WAV directly
-                    with open(TEMP_AUDIO_FILE, "wb") as f:
-                        f.write(uploaded_file.getbuffer())
-                    success = True
-                
-                if success:
-                    # Perform Transcription
-                    transcript_text = transcribe_audio(TEMP_AUDIO_FILE)
+                    if uploaded_file.name.lower().endswith(".mp3"):
+                        success = convert_mp3_to_wav(uploaded_file, temp_wav_path)
+                    else:
+                        uploaded_file.seek(0)
+                        with open(temp_wav_path, "wb") as f:
+                            f.write(uploaded_file.getbuffer())
+                        success = True
                     
-                    # Clean up temp file
-                    if os.path.exists(TEMP_AUDIO_FILE):
-                        os.remove(TEMP_AUDIO_FILE)
+                    if success:
+                        transcript_text = transcribe_audio(temp_wav_path)
+                    else:
+                        transcript_text = "Error: Failed to prepare audio for transcription."
 
-                    # Display Result
-                    st.success("Transcription Complete!")
-                    st.text_area("Preview:", value=transcript_text, height=300)
+                    file_key = f"{index}_{uploaded_file.name}"
+                    st.session_state.transcripts[file_key] = {
+                        "name": uploaded_file.name,
+                        "text": transcript_text
+                    }
+                    st.session_state.temp_paths[file_key] = temp_wav_path
 
-                    # Generate PDF
-                    pdf_data = save_to_pdf(transcript_text)
+                # Remove all temp audio files after processing all files
+                for path in list(st.session_state.temp_paths.values()):
+                    if path and os.path.exists(path):
+                        try:
+                            os.remove(path)
+                        except Exception:
+                            pass
+                st.session_state.temp_paths = {}
+                st.session_state.processed = True
 
-                    # Download Button
-                    st.download_button(
-                        label="📄 Download Transcript as PDF",
-                        data=pdf_data,
-                        file_name="call_transcript.pdf",
-                        mime="application/pdf"
-                    )
+        # Render results if present
+        for file_key, data in list(st.session_state.transcripts.items()):
+            transcript_text = data["text"]
+            name = data["name"]
+            st.success(f"Transcription Complete: {name}")
+            st.text_area(
+                f"Preview: {name}",
+                value=transcript_text,
+                height=200,
+                key=f"preview_{file_key}"
+            )
+
+            txt_data = save_to_txt(transcript_text)
+            base_name = os.path.splitext(name)[0] or "audio"
+            suggested_name = f"{base_name}_transcript.txt"
+
+            st.download_button(
+                label=f"📄 Download Transcript for {name}",
+                data=txt_data,
+                file_name=suggested_name,
+                mime="text/plain",
+                key=f"download_{file_key}",
+                on_click=remove_transcript,
+                args=(file_key,)
+            )
 
 if __name__ == "__main__":
     main()
