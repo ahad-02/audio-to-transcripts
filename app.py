@@ -1,5 +1,5 @@
 import streamlit as st
-import speech_recognition as sr
+import whisper
 from pydub import AudioSegment
 from pydub.utils import which
 import os
@@ -45,58 +45,43 @@ def convert_mp3_to_wav(uploaded_file, target_wav_path):
         st.error(f"Error converting MP3: {e}")
         return False
 
-def transcribe_audio(audio_file):
+def transcribe_audio(audio_file, language="urdu"):
     """
-    Transcribes a .wav file to text using Google Web Speech API with chunked processing for longer files.
-    """
-    recognizer = sr.Recognizer()
-    recognizer.energy_threshold = 4000
+    Transcribes an audio file to text using OpenAI Whisper.
+    Supports multiple languages including Urdu, English, and more.
     
+    Args:
+        audio_file: Path to the audio file (.wav, .mp3, etc.)
+        language: Language code (e.g., 'ur' for Urdu, 'en' for English)
+    """
     try:
-        with sr.AudioFile(audio_file) as source:
-            audio = source.stream
-            frame_rate = source.SAMPLE_RATE
-            
-            # Process audio in 60-second chunks (60 * frame_rate frames)
-            chunk_duration = 60 * frame_rate
-            transcripts = []
-            chunk_count = 0
-            
-            while True:
-                audio_chunk = audio.read(chunk_duration)
-                if len(audio_chunk) == 0:
-                    break
-                
-                # Create audio data from chunk
-                audio_data = sr.AudioData(audio_chunk, frame_rate, 2)
-                chunk_count += 1
-                
-                try:
-                    # Try transcription with explicit language
-                    text = recognizer.recognize_google(audio_data, language='en-US')
-                    if text:
-                        transcripts.append(text)
-                except sr.UnknownValueError:
-                    # Try without language specification
-                    try:
-                        text = recognizer.recognize_google(audio_data)
-                        if text:
-                            transcripts.append(text)
-                    except sr.UnknownValueError:
-                        transcripts.append("[Inaudible section]")
-                except sr.RequestError as e:
-                    return f"Error: Could not reach Google API - {e}. Check your internet connection."
-                except Exception as e:
-                    transcripts.append(f"[Error processing chunk: {str(e)}]")
+        # Load Whisper model (base model works well for Urdu)
+        # Options: tiny, base, small, medium, large
+        model = whisper.load_model("small")
         
-        if transcripts:
-            final_text = " ".join(transcripts)
-            return final_text if final_text.strip() else "Error: Could not understand any audio."
+        # Map user-friendly language names to language codes
+        language_map = {
+            "urdu": "ur",
+            "english": "en",
+            "ur": "ur",
+            "en": "en"
+        }
+        
+        lang_code = language_map.get(language.lower(), language)
+        
+        # Transcribe the audio file
+        result = model.transcribe(audio_file, language=lang_code)
+        
+        # Extract the transcribed text
+        transcript_text = result.get("text", "").strip()
+        
+        if transcript_text:
+            return transcript_text
         else:
             return "Error: Could not understand audio. Try a file with clearer speech."
             
     except Exception as e:
-        return f"Error: Failed to process audio - {str(e)}"
+        return f"Error: Failed to transcribe audio - {str(e)}"
 
 def save_to_txt(text, filename="transcript.txt"):
     """
@@ -131,6 +116,17 @@ def main():
         for index, uploaded_file in enumerate(uploaded_files):
             st.audio(uploaded_file)
 
+        # Language selection
+        language_option = st.selectbox(
+            "Select audio language",
+            ["Urdu", "English"],
+            index=0,
+            help="Choose the language spoken in the audio file"
+        )
+        
+        language_map = {"Urdu": "urdu", "English": "english"}
+        selected_language = language_map[language_option]
+
         def remove_transcript(key_to_remove: str):
             if key_to_remove in st.session_state.transcripts:
                 del st.session_state.transcripts[key_to_remove]
@@ -162,7 +158,7 @@ def main():
                         success = True
                     
                     if success:
-                        transcript_text = transcribe_audio(temp_wav_path)
+                        transcript_text = transcribe_audio(temp_wav_path, language=selected_language)
                     else:
                         transcript_text = "Error: Failed to prepare audio for transcription."
 
