@@ -98,8 +98,9 @@ Simply run `streamlit run app.py` as described above.
 ### Production Deployment (Ubuntu/Linux)
 See `deploy.sh` for systemd service setup:
 ```bash
-sudo bash deploy.sh
-sudo systemctl status audio-transcriber
+sudo systemctl stop audio-transcriber
+sudo systemctl disable --now audio-transcriber
+sudo systemctl status audio-transcriber --no-pager
 ```
 
 ## 📝 Notes
