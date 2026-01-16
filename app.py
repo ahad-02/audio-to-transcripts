@@ -1,79 +1,34 @@
 import streamlit as st
-import whisper
-from pydub import AudioSegment
-from pydub.utils import which
+from openai import OpenAI
 import os
 import uuid
+from dotenv import load_dotenv
+
 
 #  Configuration
-TEMP_AUDIO_FILE = "temp_audio.wav"
+load_dotenv()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TEMP_DIR = "temp_audio"
 
-#  Helper Functions
-
-def ensure_ffmpeg_available():
+def transcribe_audio(audio_file):
     """
-    Ensure FFmpeg and ffprobe are available for pydub and configure their paths.
-    """
-    ffmpeg_path = which("ffmpeg")
-    ffprobe_path = which("ffprobe")
-    if not ffmpeg_path or not ffprobe_path:
-        st.error(
-            "FFmpeg is required to process MP3 files but was not found.\n\n"
-            "Install it and try again:\n\n"
-            "  sudo apt update && sudo apt install -y ffmpeg"
-        )
-        return False
-    # Configure pydub to use discovered binaries
-    AudioSegment.converter = ffmpeg_path
-    AudioSegment.ffprobe = ffprobe_path
-    return True
-
-def convert_mp3_to_wav(uploaded_file, target_wav_path):
-    """
-    Converts an uploaded MP3 file to WAV format using pydub.
-    """
-    try:
-        if not ensure_ffmpeg_available():
-            return False
-        uploaded_file.seek(0)
-        audio = AudioSegment.from_mp3(uploaded_file)
-        # Export as wav
-        audio.export(target_wav_path, format="wav")
-        return True
-    except Exception as e:
-        st.error(f"Error converting MP3: {e}")
-        return False
-
-def transcribe_audio(audio_file, language="urdu"):
-    """
-    Transcribes an audio file to text using OpenAI Whisper.
-    Supports multiple languages including Urdu, English, and more.
+    Transcribes an audio file to text using OpenAI
+      GPT-4O API.
     
     Args:
         audio_file: Path to the audio file (.wav, .mp3, etc.)
-        language: Language code (e.g., 'ur' for Urdu, 'en' for English)
     """
     try:
-        # Load Whisper model (base model works well for Urdu)
-        # Options: tiny, base, small, medium, large
-        model = whisper.load_model("small")
+        client = OpenAI(api_key=OPENAI_API_KEY)
         
-        # Map user-friendly language names to language codes
-        language_map = {
-            "urdu": "ur",
-            "english": "en",
-            "ur": "ur",
-            "en": "en"
-        }
+        # Open audio file in binary mode
+        with open(audio_file, "rb") as f:
+            transcript = client.audio.transcriptions.create(
+                model="gpt-4o-transcribe",
+                file=f
+            )
         
-        lang_code = language_map.get(language.lower(), language)
-        
-        # Transcribe the audio file
-        result = model.transcribe(audio_file, language=lang_code)
-        
-        # Extract the transcribed text
-        transcript_text = result.get("text", "").strip()
+        transcript_text = transcript.text.strip() if transcript.text else ""
         
         if transcript_text:
             return transcript_text
@@ -95,7 +50,12 @@ def main():
     st.set_page_config(page_title="Audio to Text Transcriber", layout="centered")
     
     st.title("🎙️ Audio to Text Transcriber")
-    st.write("Upload a `.wav` or `.mp3` file to generate a text transcript.")
+    st.write("Upload a `.wav` or `.mp3` file to generate a text transcript using GPT-4O.")
+    
+    # Check if API key is loaded
+    if not OPENAI_API_KEY:
+        st.error("❌ OpenAI API key not found. Please add OPENAI_API_KEY to your .env file.")
+        return
     
     if "transcripts" not in st.session_state:
         st.session_state.transcripts = {}
@@ -116,17 +76,6 @@ def main():
         for index, uploaded_file in enumerate(uploaded_files):
             st.audio(uploaded_file)
 
-        # Language selection
-        language_option = st.selectbox(
-            "Select audio language",
-            ["Urdu", "English"],
-            index=0,
-            help="Choose the language spoken in the audio file"
-        )
-        
-        language_map = {"Urdu": "urdu", "English": "english"}
-        selected_language = language_map[language_option]
-
         def remove_transcript(key_to_remove: str):
             if key_to_remove in st.session_state.transcripts:
                 del st.session_state.transcripts[key_to_remove]
@@ -144,30 +93,25 @@ def main():
             st.session_state.temp_paths = {}
             with st.spinner("Processing audio..."):
                 for index, uploaded_file in enumerate(uploaded_files):
-                    success = False
                     unique_id = uuid.uuid4().hex[:8]
                     base_name = os.path.splitext(uploaded_file.name)[0] or "audio"
-                    temp_wav_path = os.path.join(TEMP_DIR, f"{base_name}_{unique_id}.wav")
-
-                    if uploaded_file.name.lower().endswith(".mp3"):
-                        success = convert_mp3_to_wav(uploaded_file, temp_wav_path)
-                    else:
-                        uploaded_file.seek(0)
-                        with open(temp_wav_path, "wb") as f:
-                            f.write(uploaded_file.getbuffer())
-                        success = True
+                    file_ext = uploaded_file.name.split('.')[-1]
+                    temp_audio_path = os.path.join(TEMP_DIR, f"{base_name}_{unique_id}.{file_ext}")
                     
-                    if success:
-                        transcript_text = transcribe_audio(temp_wav_path, language=selected_language)
-                    else:
-                        transcript_text = "Error: Failed to prepare audio for transcription."
+                    # Save uploaded file temporarily
+                    uploaded_file.seek(0)
+                    with open(temp_audio_path, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+                    
+                    # Transcribe directly without conversion
+                    transcript_text = transcribe_audio(temp_audio_path)
 
                     file_key = f"{index}_{uploaded_file.name}"
                     st.session_state.transcripts[file_key] = {
                         "name": uploaded_file.name,
                         "text": transcript_text
                     }
-                    st.session_state.temp_paths[file_key] = temp_wav_path
+                    st.session_state.temp_paths[file_key] = temp_audio_path
 
                 # Remove all temp audio files after processing all files
                 for path in list(st.session_state.temp_paths.values()):
