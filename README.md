@@ -30,7 +30,7 @@ Before running the project, ensure you have the following installed:
 
 1.  **Clone the repository** (or download the source code):
     ```bash
-    git clone [https://github.com/yourusername/audio-to-pdf-transcriber.git](https://github.com/yourusername/audio-to-pdf-transcriber.git)
+    git clone [https://github.com/ahad-02/audio-to-pdf-transcriber.git](https://github.com/yourusername/audio-to-pdf-transcriber.git)
     cd audio-to-pdf-transcriber
     ```
 
