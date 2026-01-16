@@ -47,7 +47,8 @@ Before running the project, ensure you have the following installed:
 
 3.  **Install Dependencies:**
     ```bash
-    pip install streamlit SpeechRecognition fpdf pydub
+    pip install streamlit fpdf pydub
+    pip install -U openai-whisper
     ```
 
 ## ▶️ Usage
